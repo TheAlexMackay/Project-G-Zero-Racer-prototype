@@ -13,9 +13,30 @@ export interface Camera {
   height: number;
 }
 
-const OFF_TRACK_R = 20, OFF_TRACK_G = 40, OFF_TRACK_B = 24;
+const OFF_TRACK_R = 8, OFF_TRACK_G = 4, OFF_TRACK_B = 22;
 const FOG_NEAR = 900;
 const FOG_FAR = 3200;
+// Void areas fade into the sky's horizon color over a longer distance than the general fog —
+// this is what sells the far-off terrain as hazy and distant rather than a crisp flat floor.
+const VOID_FADE_NEAR = 500;
+const VOID_FADE_FAR = 2600;
+
+// A second, lower ground layer rendered wherever the track texture is void, using its own
+// floor-cast offset further below the camera than the track — this is what reads as distant
+// terrain underneath a floating track, rather than the track hovering over pure empty space.
+const TERRAIN_DEPTH_OFFSET = 420;
+const TERRAIN_TILE = 150;
+const TERRAIN_COLOR_A = { r: 42, g: 36, b: 48 };
+const TERRAIN_COLOR_B = { r: 32, g: 27, b: 37 };
+
+function parseHexColor(hex: string): [number, number, number] {
+  const clean = hex.replace("#", "");
+  return [
+    parseInt(clean.slice(0, 2), 16),
+    parseInt(clean.slice(2, 4), 16),
+    parseInt(clean.slice(4, 6), 16),
+  ];
+}
 
 /**
  * Hand-rolled Mode 7 floor-cast: renders the track texture as a scaling/rotating ground
@@ -48,7 +69,7 @@ export class Mode7Renderer {
     this.ctx.fillRect(0, 0, SCREEN_WIDTH, HORIZON_Y);
   }
 
-  renderFloor(camera: Camera, texture: BakedTrackTexture) {
+  renderFloor(camera: Camera, texture: BakedTrackTexture, horizonColorHex: string) {
     const focalLength = SCREEN_WIDTH / 2;
     const cosYaw = Math.cos(camera.yaw);
     const sinYaw = Math.sin(camera.yaw);
@@ -59,6 +80,9 @@ export class Mode7Renderer {
     const originX = texture.originX;
     const originZ = texture.originZ;
     const ppu = texture.pixelsPerUnit;
+    const [horizonR, horizonG, horizonB] = parseHexColor(horizonColorHex);
+
+    const terrainCamHeight = camera.height + TERRAIN_DEPTH_OFFSET;
 
     for (let row = 0; row < floorRows; row++) {
       const rowFromHorizon = row + 1;
@@ -72,27 +96,64 @@ export class Mode7Renderer {
       const stepX = (cosYaw * halfWidth * 2) / SCREEN_WIDTH;
       const stepZ = (-sinYaw * halfWidth * 2) / SCREEN_WIDTH;
 
+      // Terrain layer: the same ray angles, but projected as if the ground were
+      // TERRAIN_DEPTH_OFFSET units further below the camera than the track — this is what
+      // makes it read as a lower surface visible underneath the track, not the same floor.
+      const terrainDistance = (terrainCamHeight * focalLength) / rowFromHorizon;
+      const terrainHalfWidth = terrainDistance;
+      const terrainCenterX = camera.x + sinYaw * terrainDistance;
+      const terrainCenterZ = camera.z + cosYaw * terrainDistance;
+      let terrainWorldX = terrainCenterX - cosYaw * terrainHalfWidth;
+      let terrainWorldZ = terrainCenterZ + sinYaw * terrainHalfWidth;
+      const terrainStepX = (cosYaw * terrainHalfWidth * 2) / SCREEN_WIDTH;
+      const terrainStepZ = (-sinYaw * terrainHalfWidth * 2) / SCREEN_WIDTH;
+
       const fog = 1 - Math.max(0, Math.min(1, (distance - FOG_NEAR) / (FOG_FAR - FOG_NEAR))) * 0.55;
+      const voidBlend = Math.max(0, Math.min(1, (distance - VOID_FADE_NEAR) / (VOID_FADE_FAR - VOID_FADE_NEAR)));
+      // As void pixels approach full blend into the sky color, their fog dimming fades out
+      // too, so the horizon line matches the sky exactly instead of showing a seam.
+      const voidFog = fog + (1 - fog) * voidBlend;
       const rowOffset = row * SCREEN_WIDTH;
 
       for (let x = 0; x < SCREEN_WIDTH; x++) {
         const px = (worldX - originX) * ppu | 0;
         const pz = (worldZ - originZ) * ppu | 0;
         let r: number, g: number, b: number;
+        let isVoid: boolean;
         if (px < 0 || px >= texW || pz < 0 || pz >= texH) {
           r = OFF_TRACK_R;
           g = OFF_TRACK_G;
           b = OFF_TRACK_B;
+          isVoid = true;
         } else {
           const idx = (pz * texW + px) * 4;
           r = texData[idx];
           g = texData[idx + 1];
           b = texData[idx + 2];
+          isVoid = r === OFF_TRACK_R && g === OFF_TRACK_G && b === OFF_TRACK_B;
         }
+        // The track is a floating ribbon, not solid ground — anywhere off the track shows the
+        // terrain layer below instead, fading into the sky's horizon color with distance.
+        if (isVoid) {
+          const tileX = Math.floor(terrainWorldX / TERRAIN_TILE);
+          const tileZ = Math.floor(terrainWorldZ / TERRAIN_TILE);
+          const terrainColor = (tileX + tileZ) % 2 === 0 ? TERRAIN_COLOR_A : TERRAIN_COLOR_B;
+          r = terrainColor.r;
+          g = terrainColor.g;
+          b = terrainColor.b;
+          if (voidBlend > 0) {
+            r = r + (horizonR - r) * voidBlend;
+            g = g + (horizonG - g) * voidBlend;
+            b = b + (horizonB - b) * voidBlend;
+          }
+        }
+        const pixelFog = isVoid ? voidFog : fog;
         this.floorPixels32[rowOffset + x] =
-          (255 << 24) | ((b * fog) << 16) | ((g * fog) << 8) | (r * fog);
+          (255 << 24) | ((b * pixelFog) << 16) | ((g * pixelFog) << 8) | (r * pixelFog);
         worldX += stepX;
         worldZ += stepZ;
+        terrainWorldX += terrainStepX;
+        terrainWorldZ += terrainStepZ;
       }
     }
 
