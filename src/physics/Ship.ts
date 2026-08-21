@@ -14,6 +14,19 @@ const OFF_THROTTLE_SHARPEN = 0.35; // turn-rate boost when the accelerator isn't
 const SLIDE_SPEED = 180; // world units/sec of pure lateral strafe at full trigger
 const DRIFT_STRENGTH = 140; // world units/sec of outward drift at drift stat 1.0, full steer/accelerate/speed
 
+// Acceleration is a 3-zone piecewise-linear curve over absolute speed (SPD), not a smooth
+// function: a fixed sharp rate for every ship up to 300 SPD, a rate set by the ship's own
+// acceleration stat between 300 and 400 SPD, then a fixed slow rate from 400 up to top speed.
+const ACCEL_ZONE1_END_SPEED = 300;
+const ACCEL_ZONE2_END_SPEED = 400;
+const ACCEL_ZONE1_RATE = 320; // fixed, all ships
+const ACCEL_ZONE3_RATE = 10; // fixed, all ships
+
+// Deceleration is a separate, fixed linear decline — the same rate for every ship regardless
+// of their acceleration stat, unlike the zoned acceleration curve above.
+const DECELERATION_RATE = 400; // SPD/sec while braking, all ships
+const COAST_DRAG_RATE = 80; // SPD/sec while coasting (no input), all ships
+
 export class Ship {
   x: number;
   z: number;
@@ -92,13 +105,24 @@ export class Ship {
       const boosting = input.boost;
       const targetTopSpeed = stats.topSpeed * (boosting ? stats.boostPower : 1);
       if (input.accelerate > 0) {
-        this.speed += stats.acceleration * input.accelerate * dt;
+        // 3-zone piecewise-linear acceleration: a fixed sharp rate below 300 SPD (same for
+        // every ship), the ship's own acceleration stat as the rate between 300 and 400 SPD,
+        // then a fixed slow rate from 400 SPD up to top speed (same for every ship again).
+        let accelRate: number;
+        if (this.speed < ACCEL_ZONE1_END_SPEED) {
+          accelRate = ACCEL_ZONE1_RATE;
+        } else if (this.speed < ACCEL_ZONE2_END_SPEED) {
+          accelRate = stats.acceleration;
+        } else {
+          accelRate = ACCEL_ZONE3_RATE;
+        }
+        this.speed += accelRate * input.accelerate * dt;
       }
       if (input.brake > 0) {
-        this.speed -= stats.acceleration * 1.5 * input.brake * dt;
+        this.speed -= DECELERATION_RATE * input.brake * dt;
       }
       if (!input.accelerate && !input.brake) {
-        this.speed -= stats.acceleration * 0.3 * dt; // coasting drag
+        this.speed -= COAST_DRAG_RATE * dt; // coasting drag
       }
       this.speed = Math.max(0, Math.min(targetTopSpeed, this.speed));
 

@@ -45,7 +45,7 @@ function frame(now: number) {
   };
 
   renderer.renderSky(track.skyColorTop, track.skyColorBottom);
-  renderer.renderFloor(camera, trackTexture);
+  renderer.renderFloor(camera, trackTexture, track.skyColorBottom);
   drawHud(renderer.ctx, ship, shipSprite);
 
   requestAnimationFrame(frame);

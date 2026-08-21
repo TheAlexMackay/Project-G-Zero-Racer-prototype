@@ -11,15 +11,24 @@ export interface BakedTrackTexture {
   pixelsPerUnit: number;
 }
 
-const OFF_TRACK_COLOR: [number, number, number] = [20, 40, 24];
+// A dark void rather than solid ground — the track should read as a ribbon floating over
+// open space, not terrain, so anywhere off the track/shoulder/wall is deep-space dark instead
+// of a grass-like color. The renderer additionally fades this toward the sky's horizon color
+// with distance, so it visually dissolves into open air rather than looking like a flat floor.
+const OFF_TRACK_COLOR: [number, number, number] = [8, 4, 22];
 const ROAD_COLOR_A: [number, number, number] = [70, 70, 78];
 const ROAD_COLOR_B: [number, number, number] = [56, 56, 64];
 const RUMBLE_COLOR_A: [number, number, number] = [200, 30, 30];
 const RUMBLE_COLOR_B: [number, number, number] = [225, 225, 225];
 const WALL_COLOR_A: [number, number, number] = [255, 140, 0];
 const WALL_COLOR_B: [number, number, number] = [40, 40, 40];
+// Off-road shoulder: a duller, dirtier checker than the road, on a smaller tile — reads as
+// a distinct rough surface between the road edge and the wall rather than empty background.
+const SHOULDER_COLOR_A: [number, number, number] = [52, 46, 34];
+const SHOULDER_COLOR_B: [number, number, number] = [42, 37, 27];
 
 const CHECKER_TILE = 40;
+const SHOULDER_TILE = 18;
 const RUMBLE_WIDTH = 6;
 const RUMBLE_STRIPE_LENGTH = 1; // one stripe color per segment
 
@@ -27,6 +36,12 @@ function roadColorAt(worldX: number, worldZ: number): [number, number, number] {
   const tileX = Math.floor(worldX / CHECKER_TILE);
   const tileZ = Math.floor(worldZ / CHECKER_TILE);
   return (tileX + tileZ) % 2 === 0 ? ROAD_COLOR_A : ROAD_COLOR_B;
+}
+
+function shoulderColorAt(worldX: number, worldZ: number): [number, number, number] {
+  const tileX = Math.floor(worldX / SHOULDER_TILE);
+  const tileZ = Math.floor(worldZ / SHOULDER_TILE);
+  return (tileX + tileZ) % 2 === 0 ? SHOULDER_COLOR_A : SHOULDER_COLOR_B;
 }
 
 function setPixel(data: Uint8ClampedArray, width: number, px: number, pz: number, color: [number, number, number]) {
@@ -54,6 +69,11 @@ export function bakeTrackTexture(track: TrackDef, pixelsPerUnit = 1): BakedTrack
   const width = Math.ceil((maxX - minX) * pixelsPerUnit);
   const height = Math.ceil((maxZ - minZ) * pixelsPerUnit);
   const data = new Uint8ClampedArray(width * height * 4);
+  // Tracks the closest distance-to-centerline seen so far per pixel. Neighboring segments'
+  // bounding boxes overlap near every joint, and without this a later segment would always
+  // overwrite an earlier, more accurate value with its own (often more-clamped, circular-cap)
+  // one just because it happened to be processed last — visible as circular seams on bends.
+  const bestDist = new Float32Array(width * height).fill(Infinity);
 
   // Fill off-track background first; segments paint the road on top.
   for (let i = 0; i < width * height; i++) {
@@ -73,10 +93,6 @@ export function bakeTrackTexture(track: TrackDef, pixelsPerUnit = 1): BakedTrack
     const segX = p1.x - p0.x;
     const segZ = p1.z - p0.z;
     const segLen = Math.sqrt(segX * segX + segZ * segZ) || 1;
-    const tangentX = segX / segLen;
-    const tangentZ = segZ / segLen;
-    const normalX = -tangentZ;
-    const normalZ = tangentX;
     const maxWidth = Math.max(p0.width, p1.width);
 
     const half = maxWidth / 2 + WALL_MARGIN + 2;
@@ -98,14 +114,26 @@ export function bakeTrackTexture(track: TrackDef, pixelsPerUnit = 1): BakedTrack
         const worldX = minX + px / pixelsPerUnit;
         const dx = worldX - p0.x;
         const dz = worldZ - p0.z;
-        let t = (dx * segX + dz * segZ) / (segLen * segLen);
-        if (t < 0 || t > 1) continue;
-        const lateral = dx * normalX + dz * normalZ;
-        const absLateral = Math.abs(lateral);
+        const rawT = (dx * segX + dz * segZ) / (segLen * segLen);
+        // Clamp (rather than reject) t outside [0, 1] so each segment becomes a capsule with
+        // rounded end caps instead of a flat perpendicular cutoff. On a bend, adjacent segments
+        // turn relative to each other, so flat caps leave a wedge-shaped gap neither segment
+        // paints; round caps overlap there instead and close it.
+        const t = Math.max(0, Math.min(1, rawT));
+        const closestX = p0.x + segX * t;
+        const closestZ = p0.z + segZ * t;
+        const absLateral = Math.hypot(worldX - closestX, worldZ - closestZ);
         const trackWidth = p0.width + (p1.width - p0.width) * t;
         const half2 = trackWidth / 2;
         const wallBoundary = half2 + WALL_MARGIN;
         if (absLateral > wallBoundary) continue;
+
+        const pixelIndex = pz * width + px;
+        if (absLateral >= bestDist[pixelIndex]) continue; // a closer segment already owns this pixel
+        // Claim the pixel at this distance immediately — even a "no paint, plain shoulder"
+        // outcome below must still block worse (farther) segments from mis-deciding this
+        // pixel is near *their* edge just because they happened to run afterward.
+        bestDist[pixelIndex] = absLateral;
 
         let color: [number, number, number];
         if (absLateral <= half2) {
@@ -113,7 +141,10 @@ export function bakeTrackTexture(track: TrackDef, pixelsPerUnit = 1): BakedTrack
         } else if (wallBoundary - absLateral < WALL_STRIPE_WIDTH) {
           color = Math.floor(i / RUMBLE_STRIPE_LENGTH) % 2 === 0 ? WALL_COLOR_A : WALL_COLOR_B;
         } else {
-          continue; // plain shoulder — background fill already covers it
+          // Plain shoulder — must still explicitly repaint here (not just skip) since a worse
+          // (farther) segment, processed earlier, may have already painted a wrong stripe/wall
+          // color before this closer, more authoritative segment got a chance to correct it.
+          color = shoulderColorAt(worldX, worldZ);
         }
         setPixel(data, width, px, pz, color);
       }
