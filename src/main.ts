@@ -1,16 +1,22 @@
 import "./style.css";
 import { DEFAULT_CHARACTER } from "./character/defaultCharacter";
 import { generateShipSprite } from "./character/spriteGen";
-import { drawHud } from "./hud/Hud";
+import { drawHud, SHIP_SPRITE_BOTTOM_MARGIN } from "./hud/Hud";
 import { InputManager } from "./input/InputManager";
 import { Ship } from "./physics/Ship";
-import { Mode7Renderer, SCREEN_HEIGHT, SCREEN_WIDTH } from "./render/Mode7Renderer";
+import { HORIZON_Y, Mode7Renderer, SCREEN_HEIGHT, SCREEN_WIDTH } from "./render/Mode7Renderer";
 import { OVAL_TRACK } from "./track/ovalTrack";
 import { bakeTrackTexture } from "./track/trackTexture";
 
 const CAMERA_HEIGHT = 70;
-const CAMERA_BACK_OFFSET = 26;
 const MAX_DT = 0.05;
+
+// The ship's collision point should line up with where its sprite actually touches down on
+// screen, not an arbitrary offset — so derive how far behind the ship the camera sits from
+// the same Mode 7 distance formula the floor renderer uses, evaluated at the sprite's own
+// screen row (its bottom edge, where the hull meets the track).
+const shipSpriteBottomRow = SCREEN_HEIGHT - SHIP_SPRITE_BOTTOM_MARGIN - HORIZON_Y;
+const CAMERA_BACK_OFFSET = (CAMERA_HEIGHT * (SCREEN_WIDTH / 2)) / (shipSpriteBottomRow + 1);
 
 const canvas = document.getElementById("game-canvas") as HTMLCanvasElement;
 const renderer = new Mode7Renderer(canvas);

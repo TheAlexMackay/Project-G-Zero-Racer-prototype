@@ -1,6 +1,9 @@
 import { SCREEN_HEIGHT, SCREEN_WIDTH } from "../render/Mode7Renderer";
 import type { Ship } from "../physics/Ship";
 
+/** How far the ship sprite's bottom edge sits above the screen's bottom edge, in screen pixels. */
+export const SHIP_SPRITE_BOTTOM_MARGIN = 26;
+
 function formatTime(seconds: number | null): string {
   if (seconds === null) return "--:--.--";
   const m = Math.floor(seconds / 60);
@@ -19,7 +22,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, ship: Ship, shipSprite: H
   ctx.drawImage(
     shipSprite,
     SCREEN_WIDTH / 2 - spriteW / 2,
-    SCREEN_HEIGHT - spriteH - 4,
+    SCREEN_HEIGHT - spriteH - SHIP_SPRITE_BOTTOM_MARGIN,
     spriteW,
     spriteH,
   );

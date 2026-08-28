@@ -8,6 +8,7 @@ const OFF_TRACK_DRAG = 0.6; // speed multiplier per second while off-track
 const GRIP_BASE = 6; // how fast velocity direction catches up to heading (radians/sec at low speed)
 const WALL_RESTITUTION = 0.65; // fraction of into-wall speed reflected back out on impact
 const STUN_IMPACT_SPEED = 400; // minimum into-wall speed that stuns the ship on bounce
+const STUN_DURATION = 1; // seconds the ship stays thrown by the bounce before regaining power
 const TRIGGER_SHARPEN = 0.35; // turn-rate boost from the same-side trigger while turning that way
 const TRIGGER_WIDEN = 0.3; // turn-rate cut from the opposite-side trigger while turning that way
 const OFF_THROTTLE_SHARPEN = 0.35; // turn-rate boost when the accelerator isn't held
@@ -45,7 +46,7 @@ export class Ship {
   private lastLapProgress = 0;
   private _offTrack = false;
   private stunned = false;
-  private stunAwaitingRelease = false;
+  private stunTimer = 0;
 
   constructor(readonly character: CharacterDef, track: TrackDef) {
     const start = pointAtProgress(track, 0);
@@ -60,7 +61,7 @@ export class Ship {
     return this._offTrack;
   }
 
-  /** True from a wall bounce until the player releases the accelerator and presses it again. */
+  /** True for STUN_DURATION seconds after a hard wall bounce, until power comes back on its own. */
   get isStunned(): boolean {
     return this.stunned;
   }
@@ -68,12 +69,11 @@ export class Ship {
   update(dt: number, input: InputState, track: TrackDef) {
     const stats = this.character.stats;
 
-    // Recovery from a wall-bounce stun requires releasing the accelerator at least once and
-    // then pressing it again — just holding it through the bounce doesn't count.
+    // Recovery from a wall-bounce stun is purely time-based — the ship stays thrown by the
+    // bounce for a fixed duration, then automatically regains forward momentum.
     if (this.stunned) {
-      if (input.accelerate === 0) {
-        this.stunAwaitingRelease = false;
-      } else if (!this.stunAwaitingRelease) {
+      this.stunTimer -= dt;
+      if (this.stunTimer <= 0) {
         this.stunned = false;
       }
     }
@@ -191,7 +191,7 @@ export class Ship {
         // Only a hard enough hit stuns — a light graze just bounces off cleanly.
         if (impactSpeed >= STUN_IMPACT_SPEED) {
           this.stunned = true;
-          this.stunAwaitingRelease = true;
+          this.stunTimer = STUN_DURATION;
         }
       }
     } else if (this._offTrack) {
